@@ -12,17 +12,20 @@ from tests.factories import AccountFactory
 from service.common import status  # HTTP Status Codes
 from service.models import db, Account, init_db
 from service.routes import app
+from service import talisman
 
 DATABASE_URI = os.getenv(
     "DATABASE_URI", "postgresql://postgres:postgres@localhost:5432/postgres"
 )
 
 BASE_URL = "/accounts"
-
+HTTPS_ENVIRON = {'wsgi.url_scheme': 'https'}
 
 ######################################################################
 #  T E S T   C A S E S
 ######################################################################
+
+
 class TestAccountService(TestCase):
     """Account Service Tests"""
 
@@ -32,6 +35,7 @@ class TestAccountService(TestCase):
         app.config["TESTING"] = True
         app.config["DEBUG"] = False
         app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URI
+        talisman.force_https = False
         app.logger.setLevel(logging.CRITICAL)
         init_db(app)
 
@@ -124,3 +128,106 @@ class TestAccountService(TestCase):
         self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
     # ADD YOUR TEST CASES HERE ...
+    def test_read_an_account(self):
+        """It should read an Account"""
+        accounts = self._create_accounts(5)
+        account = accounts[0]
+        response = self.client.get(f"{BASE_URL}/{account.id}")
+        data = response.get_json()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(data['id'], account.id)
+        self.assertEqual(data["name"], account.name)
+        self.assertEqual(data["email"], account.email)
+        self.assertEqual(data["address"], account.address)
+        self.assertEqual(data["phone_number"], account.phone_number)
+        self.assertEqual(data["date_joined"], str(account.date_joined))
+
+    def test_read_no_account(self):
+        """It should return no account found"""
+        accounts = self._create_accounts(5)
+        account = accounts[0]
+        account.id = 0
+        response = self.client.get(f"{BASE_URL}/{account.id}")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_list_all_account(self):
+        """It should list all Accounts"""
+        self._create_accounts(5)
+        response = self.client.get(BASE_URL)
+        data = response.get_json()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(data), 5)
+
+    def test_list_no_account(self):
+        """It should list return empty list and 200 if no accounts"""
+        response = self.client.get(BASE_URL)
+        data = response.get_json()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(data), 0)
+
+    def test_update_account(self):
+        """It should update account"""
+        account = self._create_accounts(1)[0]
+        account2 = AccountFactory()
+        account.address = account2.address
+        account.email = account2.email
+        response = self.client.put(f"{BASE_URL}/{account.id}", json=account.serialize())
+        data = response.get_json()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(data["name"], account.name)
+        self.assertEqual(data["address"], account.address)
+        self.assertEqual(data["email"], account.email)
+        self.assertEqual(data["phone_number"], account.phone_number)
+
+    def test_update_no_account(self):
+        """It should return 404 if no account found"""
+        accounts = self._create_accounts(5)
+        account = accounts[0]
+        response = self.client.put(f"{BASE_URL}/{0}", json=account.serialize())
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_account(self):
+        """It should delete an account"""
+        account = self._create_accounts(5)[0]
+        response = self.client.delete(f"{BASE_URL}/{account.id}")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        # Check if only 1 of 5 deleted
+        response = self.client.get(BASE_URL)
+        data = response.get_json()
+        print(data)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(data), 4)
+
+    def test_error_handler(self):
+        """Error handler should return method not allowed when an invalid request is made on an endpoint"""
+        account = self._create_accounts(1)[0]
+        # PUT on BASE_URL
+        response = self.client.put(f"{BASE_URL}", json=account.serialize())
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        # DELETE on BASE_URL
+        response = self.client.delete(f"{BASE_URL}")
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        # POST on BASE_URL/<account_id>
+        account = AccountFactory()
+        response = self.client.post(
+            f"{BASE_URL}/{account.id}",
+            json=account.serialize(),
+            content_type="application/json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_security_headers(self):
+        """It should return security headers"""
+        response = self.client.get('/', environ_overrides=HTTPS_ENVIRON)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.headers.get('X-Frame-Options'), 'SAMEORIGIN')
+        self.assertEqual(response.headers.get('X-Content-Type-Options'), 'nosniff')
+        self.assertEqual(response.headers.get('Content-Security-Policy'), 'default-src \'self\'; object-src \'none\'')
+        self.assertEqual(response.headers.get('Referrer-Policy'), 'strict-origin-when-cross-origin')
+
+    def test_cors_policies(self):
+        """It should return cors header"""
+        response = self.client.get('/', environ_overrides=HTTPS_ENVIRON)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.headers.get('Access-Control-Allow-Origin'), '*')
